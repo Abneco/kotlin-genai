@@ -45,6 +45,7 @@ import io.ktor.http.content.ByteArrayContent
 import io.ktor.http.contentType
 import io.ktor.utils.io.errors.IOException
 import io.ktor.utils.io.readUTF8Line
+import kotlin.math.ceil
 import kotlin.math.pow
 import kotlin.random.Random
 import kotlinx.coroutines.CancellationException
@@ -320,6 +321,8 @@ internal class ApiClient(
 
     mergedOptions.timeout?.let { timeoutMs ->
       timeout { requestTimeoutMillis = timeoutMs.toLong() }
+      // Set before the HttpOptions headers below, so a caller's own value replaces it.
+      headers["X-Server-Timeout"] = ceil(timeoutMs / 1000.0).toInt().toString()
     }
 
     // Set Content-Type if explicitly passed in headers.

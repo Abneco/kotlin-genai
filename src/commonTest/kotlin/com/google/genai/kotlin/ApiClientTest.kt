@@ -31,6 +31,7 @@ import io.ktor.utils.io.ByteReadChannel
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.test.runTest
@@ -296,6 +297,32 @@ class ApiClientTest {
     assertNotNull(capturedRequest)
     assertEquals("request.api.com", capturedRequest!!.url.host)
     assertEquals("/v2/test/path", capturedRequest!!.url.encodedPath)
+  }
+
+  @Test
+  fun testRequest_withTimeout_sendsServerTimeoutRoundedUpToSeconds() = runTest {
+    var capturedRequest: HttpRequestData? = null
+    val engine = createMockEngine { capturedRequest = it }
+
+    ApiClient(apiKey = "test-api-key", engine = engine).use { client ->
+      client.request("GET", "test/path", httpOptions = HttpOptions(timeout = 1500))
+    }
+
+    assertNotNull(capturedRequest)
+    assertEquals("2", capturedRequest!!.headers["X-Server-Timeout"])
+  }
+
+  @Test
+  fun testRequest_withoutTimeout_sendsNoServerTimeout() = runTest {
+    var capturedRequest: HttpRequestData? = null
+    val engine = createMockEngine { capturedRequest = it }
+
+    ApiClient(apiKey = "test-api-key", engine = engine).use { client ->
+      client.request("GET", "test/path")
+    }
+
+    assertNotNull(capturedRequest)
+    assertNull(capturedRequest!!.headers["X-Server-Timeout"])
   }
 
   @Test
