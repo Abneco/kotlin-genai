@@ -201,4 +201,10 @@ data class GenerateContentConfig(
 
   /** Optional. Configuration for audio transcription (speech recognition). */
   val audioTranscriptionConfig: AudioTranscriptionConfig? = null,
+
+  /**
+   * An opaque continuation token used to resume generation from a previous response that stopped
+   * with `finish_reason` set to `CONTINUATION`.
+   */
+  @Serializable(with = ByteArrayAsBase64Serializer::class) val continuationToken: ByteArray? = null,
 )
