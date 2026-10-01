@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.4.0](https://github.com/googleapis/kotlin-genai/compare/v1.3.0...v1.4.0) (2026-10-01)
+
+
+### Features
+
+* support continuation_token in GenerateContent ([ae4f0b3](https://github.com/googleapis/kotlin-genai/commit/ae4f0b3d9b037f445420b45f6adf4307bdf9317e))
+
+
+### Bug Fixes
+
+* send X-Server-Timeout when a request timeout is set ([26c0eb3](https://github.com/googleapis/kotlin-genai/commit/26c0eb3e6464064af84ec1af3d3afddaa5775673))
+
 ## [1.3.0](https://github.com/googleapis/kotlin-genai/compare/v1.2.0...v1.3.0) (2026-09-29)
 
 
