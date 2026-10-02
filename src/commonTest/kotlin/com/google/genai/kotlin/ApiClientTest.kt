@@ -382,6 +382,20 @@ class ApiClientTest {
   }
 
   @Test
+  fun testRequest_absoluteUrl_rewritesToABaseUrlThatOnlyLooksLikeAGoogleHost() = runTest {
+    var capturedRequest: HttpRequestData? = null
+    val engine = createMockEngine { capturedRequest = it }
+    val httpOptions = HttpOptions(baseUrl = "https://my-googleapis.com")
+
+    ApiClient(apiKey = "test-api-key", httpOptions = httpOptions, engine = engine).use { client ->
+      client.request("GET", "https://generativelanguage.googleapis.com/v1beta/files/test-file")
+    }
+
+    assertNotNull(capturedRequest)
+    assertEquals("my-googleapis.com", capturedRequest!!.url.host)
+  }
+
+  @Test
   fun testRequest_withEnterpriseUsLocation_usesSpecialBaseUrl() = runTest {
     var capturedRequest: HttpRequestData? = null
     val engine = createMockEngine { capturedRequest = it }

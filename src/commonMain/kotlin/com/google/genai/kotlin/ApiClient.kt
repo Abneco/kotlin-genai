@@ -415,9 +415,10 @@ internal class ApiClient(
       if (baseUrlStr != null) {
         val baseUrl = Url(baseUrlStr)
         // Rewrite scheme, host, and port if baseUrl is custom (e.g. not googleapis.com or contains
-        // localhost)
+        // localhost). The leading dot matters: without it a caller's own "my-googleapis.com"
+        // reads as a Google host and their absolute URLs bypass the base URL they configured.
         val isCustomBaseUrl =
-          !baseUrl.host.endsWith("googleapis.com") ||
+          !baseUrl.host.endsWith(".googleapis.com") ||
             baseUrl.host == "localhost" ||
             baseUrl.host == "127.0.0.1"
         if (isCustomBaseUrl) {
