@@ -29,28 +29,28 @@ value class SafetyPolicy(val value: String) {
 
   companion object {
 
-    /** Unspecified safety policy. */
+    /** Unspecified safety policy. This value should not be used. */
     val SAFETY_POLICY_UNSPECIFIED = SafetyPolicy("SAFETY_POLICY_UNSPECIFIED")
 
-    /** Safety policy for financial transactions. */
+    /** Financial transactions safety policy. */
     val FINANCIAL_TRANSACTIONS = SafetyPolicy("FINANCIAL_TRANSACTIONS")
 
-    /** Safety policy for sensitive data modification. */
+    /** Sensitive data modification safety policy. */
     val SENSITIVE_DATA_MODIFICATION = SafetyPolicy("SENSITIVE_DATA_MODIFICATION")
 
-    /** Safety policy for communication tools (e.g. Gmail, Chat, Meet). */
+    /** Communication tool safety policy. */
     val COMMUNICATION_TOOL = SafetyPolicy("COMMUNICATION_TOOL")
 
-    /** Safety policy for account creation. */
+    /** Account creation safety policy. */
     val ACCOUNT_CREATION = SafetyPolicy("ACCOUNT_CREATION")
 
-    /** Safety policy for data modification. */
+    /** Data modification safety policy. */
     val DATA_MODIFICATION = SafetyPolicy("DATA_MODIFICATION")
 
-    /** Safety policy for user consent management. */
+    /** User consent management safety policy. */
     val USER_CONSENT_MANAGEMENT = SafetyPolicy("USER_CONSENT_MANAGEMENT")
 
-    /** Safety policy for legal terms and agreements. */
+    /** Legal terms and agreements safety policy. */
     val LEGAL_TERMS_AND_AGREEMENTS = SafetyPolicy("LEGAL_TERMS_AND_AGREEMENTS")
   }
 }

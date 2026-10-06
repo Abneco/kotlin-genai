@@ -39,8 +39,6 @@ data class ComputerUse(
   /** Optional. Enables the prompt injection detection check on computer-use request. */
   val enablePromptInjectionDetection: Boolean? = null,
 
-  /**
-   * Optional. Disabled safety policies for computer use. This field is not supported in Vertex AI.
-   */
+  /** Optional. Disabled safety policies for computer use. */
   val disabledSafetyPolicies: List<SafetyPolicy>? = null,
 )

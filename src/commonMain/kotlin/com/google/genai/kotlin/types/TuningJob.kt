@@ -168,6 +168,6 @@ data class TuningJob(
   /**  */
   val distillationSamplingSpec: DistillationSamplingSpec? = null,
 
-  /** The Cloud Storage metrics URI associated with this tuning job. */
+  /** Output only. The Cloud Storage metrics URI associated with this TuningJob. */
   val gcsMetricsUri: String? = null,
 )
