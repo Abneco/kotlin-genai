@@ -553,12 +553,12 @@ class Files internal constructor(internal val apiClient: ApiClient) {
    * @return The uploaded file.
    */
   suspend fun upload(channel: ByteReadChannel, size: Long, config: UploadFileConfig? = null): File {
-    if (apiClient.enterprise) {
-      throw UnsupportedOperationException(
-        "This method is only supported in Gemini Developer API mode, not in Gemini Enterprise Agent Platform mode."
-      )
-    }
     try {
+      if (apiClient.enterprise) {
+        throw UnsupportedOperationException(
+          "This method is only supported in Gemini Developer API mode, not in Gemini Enterprise Agent Platform mode."
+        )
+      }
       val mimeType = config?.mimeType
       val fileName = config?.displayName
       val uploadUrl = createFileInApi(config, mimeType, fileName, size)

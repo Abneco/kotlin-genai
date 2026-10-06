@@ -26,10 +26,13 @@ import io.ktor.http.content.OutgoingContent
 import io.ktor.http.headersOf
 import io.ktor.utils.io.ByteReadChannel
 import io.ktor.utils.io.readUTF8Line
+import io.ktor.utils.io.writeFully
+import io.ktor.utils.io.writer
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
+import kotlin.test.assertSame
 import kotlin.test.assertTrue
 import kotlinx.coroutines.test.runTest
 
@@ -382,23 +385,42 @@ class FilesTest {
 
   @Test
   fun testRegisterFiles_vertexThrows() = runTest {
-    val engine = MockEngine { request ->
-      respond("Not Found", status = HttpStatusCode.NotFound)
-    }
+    val engine = MockEngine { request -> respond("Not Found", status = HttpStatusCode.NotFound) }
 
-    ApiClient(
-        apiKey = "test-token",
-        engine = engine,
-        enterprise = true
-      )
-      .use { apiClient ->
-        val files = Files(apiClient)
-        val exception =
-          assertFailsWith<UnsupportedOperationException> {
-            val dummyCreds = GoogleCredentials.create(com.google.auth.oauth2.AccessToken("test", null))
-            files.registerFiles(credentials = dummyCreds, uris = listOf("gs://bucket/object"))
+    ApiClient(apiKey = "test-token", engine = engine, enterprise = true).use { apiClient ->
+      val files = Files(apiClient)
+      val exception =
+        assertFailsWith<UnsupportedOperationException> {
+          val dummyCreds =
+            GoogleCredentials.create(com.google.auth.oauth2.AccessToken("test", null))
+          files.registerFiles(credentials = dummyCreds, uris = listOf("gs://bucket/object"))
+        }
+      assertTrue(exception.message!!.contains("Gemini Developer API mode"))
+    }
+  }
+
+  @Test
+  fun testUpload_enterpriseCancelsChannel() = runTest {
+    val engine = MockEngine { respond("Not Found", status = HttpStatusCode.NotFound) }
+
+    ApiClient(apiKey = "test-token", engine = engine, enterprise = true).use { apiClient ->
+      val files = Files(apiClient)
+      val channel =
+        writer {
+            try {
+              channel.writeFully(ByteArray(8192))
+            } catch (_: Throwable) {}
           }
+          .channel
+      try {
+        val exception =
+          assertFailsWith<UnsupportedOperationException> { files.upload(channel, size = 8192L) }
         assertTrue(exception.message!!.contains("Gemini Developer API mode"))
+        assertTrue(channel.isClosedForRead)
+        assertSame(exception, channel.closedCause)
+      } finally {
+        channel.cancel(null)
       }
+    }
   }
 }
