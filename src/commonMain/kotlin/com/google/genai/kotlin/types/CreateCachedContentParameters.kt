@@ -24,7 +24,7 @@ import kotlinx.serialization.Serializable
 @Serializable
 internal data class CreateCachedContentParameters(
 
-  /** ID of the model to use. Example: gemini-2.0-flash */
+  /** ID of the model to use. Example: gemini-flash-latest */
   val model: String? = null,
 
   /** Configuration that contains optional parameters. */
