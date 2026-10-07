@@ -20,8 +20,7 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.contentOrNull
 
 /** Base exception class for all exceptions originating from the GenAI SDK. */
 sealed class GenAiException(message: String, cause: Throwable? = null) : Exception(message, cause)
@@ -48,9 +47,10 @@ open class GenAiApiException(val code: Int, val status: String, message: String)
           null
         }
 
-      val errorObject = jsonElement?.jsonObject?.get("error")?.jsonObject
-      var message = errorObject?.get("message")?.jsonPrimitive?.content ?: "Unknown error"
-      val status = errorObject?.get("status")?.jsonPrimitive?.content ?: "UNKNOWN"
+      val errorObject = (jsonElement as? JsonObject)?.get("error") as? JsonObject
+      var message =
+        (errorObject?.get("message") as? JsonPrimitive)?.contentOrNull ?: "Unknown error"
+      val status = (errorObject?.get("status") as? JsonPrimitive)?.contentOrNull ?: "UNKNOWN"
 
       val detailsText =
         (errorObject?.get("details") as? JsonArray)

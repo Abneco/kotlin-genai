@@ -220,4 +220,34 @@ class ErrorsTest {
     assertEquals("REDIRECT", exception.status)
     assertEquals("Redirect", exception.message?.substringAfter(": ")?.trim())
   }
+
+  @Test
+  fun testThrowFromResponse_handlesNonObjectJsonBody() {
+    for (body in listOf("[\"upstream error\"]", "\"Bad Gateway\"", "502", "null")) {
+      val exception =
+        assertFailsWith<ServerException> { GenAiApiException.throwFromResponse(502, body) }
+      assertEquals(502, exception.code)
+      assertEquals("UNKNOWN", exception.status)
+      assertEquals("Unknown error", exception.message?.substringAfter(": ")?.trim())
+    }
+  }
+
+  @Test
+  fun testThrowFromResponse_handlesNonObjectOrNonPrimitiveErrorFields() {
+    val nonObjectError = """{"error": "Bad Request"}"""
+    val exception1 =
+      assertFailsWith<ClientException> { GenAiApiException.throwFromResponse(400, nonObjectError) }
+    assertEquals(400, exception1.code)
+    assertEquals("UNKNOWN", exception1.status)
+    assertEquals("Unknown error", exception1.message?.substringAfter(": ")?.trim())
+
+    val nonPrimitiveFields = """{"error": {"message": ["nested"], "status": {"code": 1}}}"""
+    val exception2 =
+      assertFailsWith<ClientException> {
+        GenAiApiException.throwFromResponse(422, nonPrimitiveFields)
+      }
+    assertEquals(422, exception2.code)
+    assertEquals("UNKNOWN", exception2.status)
+    assertEquals("Unknown error", exception2.message?.substringAfter(": ")?.trim())
+  }
 }
