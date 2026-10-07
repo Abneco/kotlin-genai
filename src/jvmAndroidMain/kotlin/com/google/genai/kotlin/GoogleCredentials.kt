@@ -18,7 +18,6 @@ package com.google.genai.kotlin
 
 import com.google.auth.oauth2.GoogleCredentials as JvmGoogleCredentials
 import io.ktor.client.request.HttpRequestBuilder
-import io.ktor.client.request.header
 
 actual typealias GoogleCredentials = JvmGoogleCredentials
 
@@ -30,8 +29,8 @@ internal actual fun getDefaultCredentials(): GoogleCredentials? {
 internal actual fun GoogleCredentials.applyToRequest(builder: HttpRequestBuilder) {
   this.refreshIfExpired()
   val accessToken = this.accessToken.tokenValue
-  builder.header("Authorization", "Bearer $accessToken")
+  builder.headers["Authorization"] = "Bearer $accessToken"
   if (this.quotaProjectId != null) {
-    builder.header("x-goog-user-project", this.quotaProjectId)
+    builder.headers["x-goog-user-project"] = this.quotaProjectId
   }
 }

@@ -345,7 +345,7 @@ internal class ApiClient(
       if (apiKey.startsWith("auth_tokens/")) {
         throw IllegalArgumentException("Ephemeral tokens are only supported by the Live API.")
       }
-      header("x-goog-api-key", apiKey)
+      headers["x-goog-api-key"] = apiKey
     } else if (credentials != null) {
       credentials.applyToRequest(this)
     }
@@ -389,9 +389,9 @@ internal class ApiClient(
       }
       if (apiKey != null) {
         if (isEphemeralToken) {
-          header("Authorization", "Token $apiKey")
+          headers["Authorization"] = "Token $apiKey"
         } else {
-          header("x-goog-api-key", apiKey)
+          headers["x-goog-api-key"] = apiKey
         }
       } else if (credentials != null) {
         credentials.applyToRequest(this)

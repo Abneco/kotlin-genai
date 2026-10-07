@@ -478,6 +478,51 @@ class ApiClientTest {
   }
 
   @Test
+  fun testRequest_withCallerApiKeyHeader_sendsSingleApiKeyHeader() = runTest {
+    var capturedRequest: HttpRequestData? = null
+    val engine = createMockEngine { capturedRequest = it }
+    val requestOptions = HttpOptions(headers = mapOf("x-goog-api-key" to "caller-api-key"))
+
+    ApiClient(apiKey = "test-api-key", engine = engine).use { client ->
+      client.request("GET", "test/path", httpOptions = requestOptions)
+    }
+
+    assertNotNull(capturedRequest)
+    assertEquals(listOf("test-api-key"), capturedRequest!!.headers.getAll("x-goog-api-key"))
+  }
+
+  @Test
+  fun testRequest_withCallerAuthorizationHeader_sendsSingleAuthorizationHeader() = runTest {
+    val mockCredentials =
+      GoogleCredentials.create(AccessToken("test-token", null))
+        .toBuilder()
+        .setQuotaProjectId("sdk-quota-project")
+        .build()
+
+    var capturedRequest: HttpRequestData? = null
+    val engine = createMockEngine { capturedRequest = it }
+    val requestOptions =
+      HttpOptions(
+        headers =
+          mapOf(
+            "Authorization" to "Bearer caller-token",
+            "x-goog-user-project" to "caller-quota-project",
+          )
+      )
+
+    ApiClient(credentials = mockCredentials, engine = engine).use { client ->
+      client.request("GET", "test/path", httpOptions = requestOptions)
+    }
+
+    assertNotNull(capturedRequest)
+    assertEquals(listOf("Bearer test-token"), capturedRequest!!.headers.getAll("Authorization"))
+    assertEquals(
+      listOf("sdk-quota-project"),
+      capturedRequest!!.headers.getAll("x-goog-user-project"),
+    )
+  }
+
+  @Test
   fun testRequest_withRequestHttpOptions_appliesTimeout() = runTest {
     val engine = MockEngine { _ ->
       kotlinx.coroutines.delay(1000)
