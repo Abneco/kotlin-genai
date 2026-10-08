@@ -39,4 +39,7 @@ data class RealtimeInputConfig(
 
   /** Defines which input is included in the user's turn. */
   val turnCoverage: TurnCoverage? = null,
+
+  /** If true, enables interim transcript timestamps. */
+  val interimTranscriptTimestampEnabled: Boolean? = null,
 )

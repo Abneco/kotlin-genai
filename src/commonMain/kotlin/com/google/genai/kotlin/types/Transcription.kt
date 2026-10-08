@@ -18,6 +18,7 @@
 
 package com.google.genai.kotlin.types
 
+import kotlin.time.Duration
 import kotlinx.serialization.Serializable
 
 /** Audio transcription in Server Content. */
@@ -38,4 +39,10 @@ data class Transcription(
 
   /** Detailed word-level transcriptions and timing details. */
   val words: List<WordInfo>? = null,
+
+  /** Start offset in time of the transcription relative to the start of the audio. */
+  @Serializable(with = DurationStringSerializer::class) val startOffset: Duration? = null,
+
+  /** End offset in time of the transcription relative to the start of the audio. */
+  @Serializable(with = DurationStringSerializer::class) val endOffset: Duration? = null,
 )
