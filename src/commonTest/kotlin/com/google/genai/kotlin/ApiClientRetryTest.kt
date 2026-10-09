@@ -23,6 +23,7 @@ import io.ktor.client.engine.mock.respond
 import io.ktor.http.BadContentTypeFormatException
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
+import io.ktor.http.content.TextContent
 import io.ktor.http.headersOf
 import io.ktor.utils.io.errors.IOException
 import kotlin.test.assertEquals
@@ -47,7 +48,7 @@ class ApiClientRetryTest {
     val engine = MockEngine { request ->
       val index = calls
       calls++
-      bodies.add((request.body as? io.ktor.content.TextContent)?.text ?: "")
+      bodies.add((request.body as? TextContent)?.text ?: "")
       val status = statuses.getOrElse(index) { statuses.last() }
       respond(
         content = """{"error": {"code": ${status.value}, "message": "scripted"}}""",

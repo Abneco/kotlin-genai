@@ -417,7 +417,7 @@ class FilesTest {
           assertFailsWith<UnsupportedOperationException> { files.upload(channel, size = 8192L) }
         assertTrue(exception.message!!.contains("Gemini Developer API mode"))
         assertTrue(channel.isClosedForRead)
-        assertSame(exception, channel.closedCause)
+        assertSame(exception, generateSequence(channel.closedCause) { it.cause }.last())
       } finally {
         channel.cancel(null)
       }

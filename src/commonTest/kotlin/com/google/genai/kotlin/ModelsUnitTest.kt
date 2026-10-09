@@ -21,8 +21,8 @@ import com.google.genai.kotlin.types.Content
 import com.google.genai.kotlin.types.Part
 import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.respond
-import io.ktor.content.TextContent
 import io.ktor.http.HttpHeaders
+import io.ktor.http.content.TextContent
 import io.ktor.http.headersOf
 import io.mockk.every
 import io.mockk.mockk
