@@ -17,6 +17,7 @@
 package com.google.genai.kotlin
 
 import com.google.genai.kotlin.types.Content
+import com.google.genai.kotlin.types.FinishReason
 import com.google.genai.kotlin.types.FunctionCall
 import com.google.genai.kotlin.types.GenerateContentConfig
 import com.google.genai.kotlin.types.GenerateContentResponse
@@ -35,7 +36,8 @@ class Chats internal constructor(private val models: Models) {
    * function the model asks for is run locally and a FunctionResponse is built and sent back to the
    * model, until the model answers or `maximumRemoteCalls` is reached. The whole exchange is
    * recorded as one turn, and the response returned is the last one the model sent. If the limit is
-   * reached the model has not answered yet, a FunctionCall response is returned.
+   * reached the model has not answered yet, a FunctionCall response is returned. Requests that
+   * continue a response which stopped before the model finished do not count toward the limit.
    *
    * @param model The model to talk to, for example "gemini-3.6-flash".
    * @param config Applied to every turn in the session. A config passed to an individual send
@@ -66,6 +68,11 @@ class Chats internal constructor(private val models: Models) {
  * ```
  * val chat = client.chats.create(model = "gemini-3.6-flash")
  * ```
+ *
+ * A response that ends with finish reason `CONTINUATION` is continued automatically: the same
+ * request is sent again with the response's continuation token until the model finishes, and the
+ * turn is recorded once, with the whole answer. Set [GenerateContentConfig.automaticContinuation]
+ * to false to turn this off.
  *
  * A session is not safe for concurrent turns: start a turn only once the previous one has finished,
  * or the turns will not see one another. [getHistory] is safe to call at any time.
@@ -151,7 +158,8 @@ internal constructor(
    * function the model asks for is run locally and a FunctionResponse is built and sent back to the
    * model, until the model answers or `maximumRemoteCalls` is reached. The whole exchange is
    * recorded as one turn, and the response returned is the last one the model sent. If the limit is
-   * reached the model has not answered yet, a FunctionCall response is returned.
+   * reached the model has not answered yet, a FunctionCall response is returned. Requests that
+   * continue a response which stopped before the model finished do not count toward the limit.
    *
    * @param contents The message to send. Several contents are recorded as one turn.
    * @param config Replaces the session config for this turn rather than merging with it.
@@ -246,7 +254,9 @@ internal constructor(
    * The turns so far are sent along with [contents], so the model has the conversation for context.
    * The turn joins the history once the flow completes, and every chunk is kept, so a ten chunk
    * response adds ten model turns to the history rather than one. A stream that is cut off before
-   * the model finishes is kept but is not sent again in later requests.
+   * the model finishes is kept but is not sent again in later requests. A response that the model
+   * stopped early and the session continues is not cut off: the chunks of every request are emitted
+   * in order and recorded together.
    *
    * The message is sent when the returned flow is collected, not when this method is called, so
    * collect one turn before starting the next. Starting a turn while an earlier flow is still
@@ -294,6 +304,7 @@ internal constructor(
       requireNoRawFunctionDeclarations(turnConfig, afc)
 
       val requestConfig = if (afc == null) turnConfig else configWithFunctions(afc, turnConfig)
+      val continuing = requestConfig?.automaticContinuation != false
       val turn = contents.map(Transformers::tUserContent).toMutableList()
       var remainingCalls = afc?.maximumRemoteCalls ?: 1
       var isValid = true
@@ -310,9 +321,9 @@ internal constructor(
           }
           chunk.candidates?.firstOrNull()?.content?.let { modelOutput.add(it) }
           chunk.functionCalls?.let { calls.addAll(it) }
-          if (chunk.finishReason != null) {
-            finished = true
-          }
+          // A request that ends with CONTINUATION is followed by another, so the turn has finished
+          // only once a later chunk reports a different finish reason.
+          chunk.finishReason?.let { finished = it != FinishReason.CONTINUATION || !continuing }
           // Everything from the model side reaches the collector, function calls included.
           emit(chunk)
         }

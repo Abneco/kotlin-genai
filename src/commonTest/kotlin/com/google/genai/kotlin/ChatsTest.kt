@@ -17,6 +17,7 @@
 package com.google.genai.kotlin
 
 import com.google.genai.kotlin.types.Content
+import com.google.genai.kotlin.types.FinishReason
 import com.google.genai.kotlin.types.GenerateContentConfig
 import com.google.genai.kotlin.types.Part
 import kotlin.test.Test
@@ -27,6 +28,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
 import kotlinx.coroutines.flow.take
 import kotlinx.coroutines.flow.toList
@@ -61,6 +63,34 @@ class ChatsTest : BaseTestServer() {
       assertEquals("model", chat.getHistory()[1].role)
     }
   }
+
+  // Gemini API only, like ModelsTest.testGenerateContentAutomaticContinuation: the Enterprise Agent
+  // Platform model returns this whole answer in one response, so a recording there would not
+  // continue.
+  @Test
+  fun testSendMessageContinuesATruncatedResponse() =
+    runTest(timeout = 40.minutes) {
+      val client =
+        createClient(
+          enterprise = false,
+          testName = "ChatsTest.testSendMessageContinuesATruncatedResponse.mldev",
+        )
+      val chat = client.chats.create(model = "REDACTED")
+
+      val response =
+        chat.sendMessage(
+          "Write an exhaustive, multi-chapter textbook on compiler design that is around " +
+            "40,000 tokens long."
+        )
+
+      assertEquals(FinishReason.STOP, response.finishReason)
+      // The model returns at most 32,768 tokens per request, so more means it was continued.
+      val usage = response.usageMetadata
+      val outputTokens = (usage?.candidatesTokenCount ?: 0) + (usage?.thoughtsTokenCount ?: 0)
+      assertTrue(outputTokens > 32_768, "Only $outputTokens output tokens")
+      // The whole answer is one turn in the history.
+      assertEquals(listOf("user", "model"), chat.getHistory(curated = true).map { it.role })
+    }
 
   @Test
   fun testMultiTurnChatSendsPriorTurns() = runTest {
@@ -307,6 +337,45 @@ class ChatsTest : BaseTestServer() {
       assertEquals(history, chat.getHistory(curated = true))
     }
   }
+
+  // Gemini API only, for the reason given on testSendMessageContinuesATruncatedResponse.
+  @Test
+  fun testAutomaticFunctionCallingContinuesATruncatedResponse() =
+    runTest(timeout = 40.minutes) {
+      val client =
+        createClient(
+          enterprise = false,
+          testName = "ChatsTest.testAutomaticFunctionCallingContinuesATruncatedResponse.mldev",
+        )
+      val chat =
+        client.chats.create(
+          model = "REDACTED",
+          automaticFunctionCalling = AutomaticFunctionCalling(divideFunction()),
+        )
+
+      val response =
+        chat.sendMessage(
+          "First compute 100 / 2 using the tool. Then write an exhaustive, multi-chapter textbook " +
+            "on compiler design that is around 40,000 tokens long, and mention the result in its " +
+            "preface."
+        )
+
+      assertEquals(FinishReason.STOP, response.finishReason)
+      assertTrue(response.functionCalls.isNullOrEmpty())
+      // The model returns at most 32,768 tokens per request, so more means the answer was
+      // continued, and the follow-up request that ended in a function response was accepted.
+      val usage = response.usageMetadata
+      val outputTokens = (usage?.candidatesTokenCount ?: 0) + (usage?.thoughtsTokenCount ?: 0)
+      assertTrue(outputTokens > 32_768, "Only $outputTokens output tokens")
+      // One turn: the call, its response, and the whole continued answer as one model turn.
+      val history = chat.getHistory(curated = true)
+      assertEquals(listOf("user", "model", "user", "model"), history.map { it.role })
+      assertEquals("divide_integers", history[1].parts!!.firstNotNullOf { it.functionCall }.name)
+      assertEquals(
+        "divide_integers",
+        history[2].parts!!.firstNotNullOf { it.functionResponse }.name,
+      )
+    }
 
   @Test
   fun testAutomaticFunctionCallingStream() = runTest {
@@ -599,4 +668,11 @@ private fun registerFamily(): CallableFunction =
 private fun weatherFunction(): CallableFunction =
   callableFunction("get_weather", "Looks up the weather for a place.") { request: WeatherRequest ->
     "17 degrees ${request.unit} and raining in ${request.location.city}"
+  }
+
+@Serializable private data class Division(val numerator: Int, val denominator: Int)
+
+private fun divideFunction(): CallableFunction =
+  callableFunction("divide_integers", "Divides two integers.") { division: Division ->
+    division.numerator / division.denominator
   }

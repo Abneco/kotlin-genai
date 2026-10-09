@@ -135,6 +135,22 @@ class AutomaticContinuationTest {
   }
 
   @Test
+  fun testSendsTheFirstRequestWithoutAConfigWhenGivenNone() = runTest {
+    val model =
+      FakeModel(
+        response("Hello ", FinishReason.CONTINUATION, TOKEN_1),
+        response("world", FinishReason.STOP),
+      )
+
+    val merged = generateWithAutomaticContinuation(null) { model.send(it) }
+
+    assertEquals("Hello world", merged.text)
+    assertNull(model.configs[0])
+    assertContentEquals(TOKEN_1, model.configs[1]?.continuationToken)
+    assertEquals(GenerateContentConfig(), model.configs[1]?.copy(continuationToken = null))
+  }
+
+  @Test
   fun testSendsMaxOutputTokensWithEveryRequest() = runTest {
     val config = CONFIG.copy(maxOutputTokens = 100)
     val model =
@@ -193,6 +209,21 @@ class AutomaticContinuationTest {
 
     assertEquals(2, chunks.size)
     assertEquals(1, model.configs.size)
+  }
+
+  @Test
+  fun testStreamSendsTheFirstRequestWithoutAConfigWhenGivenNone() = runTest {
+    val model =
+      FakeStreamingModel(
+        flowOf(response("a", FinishReason.CONTINUATION, TOKEN_1)),
+        flowOf(response("b", FinishReason.STOP)),
+      )
+
+    val chunks = streamWithAutomaticContinuation(null) { model.send(it) }.toList()
+
+    assertEquals(listOf<String?>("a", "b"), chunks.map { it.text })
+    assertNull(model.configs[0])
+    assertContentEquals(TOKEN_1, model.configs[1]?.continuationToken)
   }
 
   @Test

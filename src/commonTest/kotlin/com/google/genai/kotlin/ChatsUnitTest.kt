@@ -29,6 +29,7 @@ import com.google.genai.kotlin.types.GoogleSearch
 import com.google.genai.kotlin.types.Part
 import com.google.genai.kotlin.types.Tool
 import io.mockk.coEvery
+import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
 import kotlin.test.Test
@@ -121,6 +122,21 @@ private fun textResponse(text: String, finished: Boolean = false): GenerateConte
         Candidate(
           content = modelTurn(text),
           finishReason = if (finished) FinishReason.STOP else null,
+        )
+      )
+  )
+
+private val CONTINUATION_TOKEN = "token".encodeToByteArray()
+
+/** A response the model stopped early, carrying a token to continue it with. */
+private fun truncatedResponse(text: String): GenerateContentResponse =
+  GenerateContentResponse(
+    candidates =
+      listOf(
+        Candidate(
+          content = modelTurn(text),
+          finishReason = FinishReason.CONTINUATION,
+          continuationToken = CONTINUATION_TOKEN,
         )
       )
   )
@@ -727,5 +743,113 @@ class ChatsUnitTest {
 
     assertEquals(listOf("user", "model", "user"), sent[1].map { it.role })
     assertEquals(1, sent[1].flatMap { it.parts.orEmpty() }.count { it.functionResponse != null })
+  }
+
+  @Test
+  fun testSendMessageLeavesContinuationToModels() = runTest {
+    val models = mockk<Models>()
+    val configs = mutableListOf<GenerateContentConfig?>()
+    coEvery { models.generateContent(any<String>(), any<List<Content>>(), any()) } answers
+      {
+        configs += thirdArg<GenerateContentConfig?>()
+        textResponse("Hello world", true)
+      }
+    val chat = Chat(models, TEST_MODEL, null, emptyList())
+    val config = GenerateContentConfig(temperature = 0.5, maxOutputTokens = 100)
+
+    chat.sendMessage("Write a long story.")
+    chat.sendMessage("And another.", config)
+
+    // Models runs the continuation loop, so the session sends one request per turn, config as
+    // given.
+    assertEquals(listOf(null, config), configs)
+  }
+
+  @Test
+  fun testSendMessagePassesAutomaticContinuationFalseToModels() = runTest {
+    val models = mockk<Models>()
+    coEvery { models.generateContent(any<String>(), any<List<Content>>(), any()) } returns
+      truncatedResponse("Hello ")
+    val sessionConfig = GenerateContentConfig(automaticContinuation = false)
+    val chat = Chat(models, TEST_MODEL, sessionConfig, emptyList())
+
+    val response = chat.sendMessage("Write a long story.")
+
+    assertEquals(FinishReason.CONTINUATION, response.finishReason)
+    coVerify(exactly = 1) {
+      models.generateContent(any<String>(), any<List<Content>>(), sessionConfig)
+    }
+    assertEquals(
+      listOf(userTurn("Write a long story."), modelTurn("Hello ")),
+      chat.getHistory(curated = true),
+    )
+  }
+
+  @Test
+  fun testAContinuedStreamIsRecordedAsOneTurn() = runTest {
+    val models = mockk<Models>()
+    every { models.generateContentStream(any<String>(), any<List<Content>>(), any()) } returns
+      flowOf(textResponse("Hello "), truncatedResponse("big "), textResponse("world", true))
+    val chat = Chat(models, TEST_MODEL, null, emptyList())
+
+    val chunks = chat.sendMessageStream("Write a long story.").toList()
+
+    assertEquals(listOf<String?>("Hello ", "big ", "world"), chunks.map { it.text })
+    assertEquals(
+      listOf(
+        userTurn("Write a long story."),
+        modelTurn("Hello "),
+        modelTurn("big "),
+        modelTurn("world"),
+      ),
+      chat.getHistory(curated = true),
+    )
+  }
+
+  @Test
+  fun testAContinuedStreamCutOffBeforeTheModelFinishesIsNotCurated() = runTest {
+    val models = mockk<Models>()
+    every { models.generateContentStream(any<String>(), any<List<Content>>(), any()) } returns
+      flowOf(truncatedResponse("Hello "), textResponse("world"))
+    val chat = Chat(models, TEST_MODEL, null, emptyList())
+
+    chat.sendMessageStream("Write a long story.").toList()
+
+    // CONTINUATION does not count as the model finishing.
+    assertEquals(3, chat.getHistory().size)
+    assertEquals(emptyList(), chat.getHistory(curated = true))
+  }
+
+  @Test
+  fun testAStreamEndingInContinuationIsNotCurated() = runTest {
+    val models = mockk<Models>()
+    every { models.generateContentStream(any<String>(), any<List<Content>>(), any()) } returns
+      flowOf(truncatedResponse("Hello "))
+    val chat = Chat(models, TEST_MODEL, null, emptyList())
+
+    chat.sendMessageStream("Write a long story.").toList()
+
+    assertEquals(2, chat.getHistory().size)
+    assertEquals(emptyList(), chat.getHistory(curated = true))
+  }
+
+  @Test
+  fun testAStreamEndingInContinuationIsCuratedWhenContinuationIsOff() = runTest {
+    val models = mockk<Models>()
+    every { models.generateContentStream(any<String>(), any<List<Content>>(), any()) } returns
+      flowOf(truncatedResponse("Hello "))
+    val chat = Chat(models, TEST_MODEL, null, emptyList())
+
+    chat
+      .sendMessageStream(
+        "Write a long story.",
+        GenerateContentConfig(automaticContinuation = false),
+      )
+      .toList()
+
+    assertEquals(
+      listOf(userTurn("Write a long story."), modelTurn("Hello ")),
+      chat.getHistory(curated = true),
+    )
   }
 }

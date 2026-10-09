@@ -245,7 +245,8 @@ inline fun <reified A, reified R> callableFunction(
  * @param maximumRemoteCalls how many requests one turn may send before giving up. Your first
  *   message counts, so it takes at least two requests for AFC: your initial message, and the
  *   FunctionResponse message we send for you after executing your handler. When the limit is
- *   reached, handlers are no longer called and you get the model's FunctionCall back.
+ *   reached, handlers are no longer called and you get the model's FunctionCall back. Requests that
+ *   continue a response which stopped before the model finished are not counted.
  * @param runFunctionsInParallel whether several functions asked for in one response may run at the
  *   same time. Off by default; turn it on only if your handlers are safe to overlap, which the SDK
  *   cannot check for you.
