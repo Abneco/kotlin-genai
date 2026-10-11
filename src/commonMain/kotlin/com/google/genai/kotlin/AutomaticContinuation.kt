@@ -87,7 +87,8 @@ internal fun streamWithAutomaticContinuation(
           } else if (candidate?.finishReason != null && !isContinuable(candidate.finishReason)) {
             token = null
           }
-          val chunkUsage = chunk.usageMetadata
+          var outChunk = clearIntermediateFinishReason(chunk, token)
+          val chunkUsage = outChunk.usageMetadata
           if (chunkUsage != null) {
             val mergedUsage =
               if (accumulatedUsage != null) {
@@ -96,28 +97,44 @@ internal fun streamWithAutomaticContinuation(
                 chunkUsage
               }
             hopUsage = mergedUsage
-            emit(if (mergedUsage !== chunkUsage) chunk.copy(usageMetadata = mergedUsage) else chunk)
-          } else {
-            emit(chunk)
+            if (mergedUsage !== chunkUsage) {
+              outChunk = outChunk.copy(usageMetadata = mergedUsage)
+            }
           }
+          emit(outChunk)
         }
       } catch (e: Throwable) {
         // If a mid-stream error occurs after an intermediate checkpoint continuationToken was
         // received, resume from that checkpoint.
-        if (e is CancellationException || token == null || !isContinuable(finishReason)) {
+        if (e is CancellationException || !canResumeStream(token, finishReason)) {
           throw e
         }
       }
       if (hopUsage != null) {
         accumulatedUsage = hopUsage
       }
-      val next = token
-      if (next == null || !isContinuable(finishReason)) {
+      if (!canResumeStream(token, finishReason)) {
         break
       }
-      requestConfig = withContinuationToken(config, next)
+      requestConfig = withContinuationToken(config, token!!)
     }
   }
+}
+
+internal fun canResumeStream(token: ByteArray?, finishReason: FinishReason?): Boolean =
+  token != null && token.isNotEmpty() && isContinuable(finishReason)
+
+internal fun clearIntermediateFinishReason(
+  chunk: GenerateContentResponse,
+  token: ByteArray?,
+): GenerateContentResponse {
+  val candidate = chunk.candidates?.firstOrNull() ?: return chunk
+  if (candidate.finishReason != null && canResumeStream(token, candidate.finishReason)) {
+    val updatedCandidates = chunk.candidates.toMutableList()
+    updatedCandidates[0] = candidate.copy(finishReason = null)
+    return chunk.copy(candidates = updatedCandidates)
+  }
+  return chunk
 }
 
 /**

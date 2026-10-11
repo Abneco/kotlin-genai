@@ -122,9 +122,16 @@ class AutomaticContinuationTest {
   fun testStopsWhenTheResponseHasNoToken() = runTest {
     val model = FakeModel(response("Hello", FinishReason.CONTINUATION))
 
-    generateWithAutomaticContinuation(CONFIG) { model.send(it) }
+    val response = generateWithAutomaticContinuation(CONFIG) { model.send(it) }
 
+    assertEquals(FinishReason.CONTINUATION, response.finishReason)
     assertEquals(1, model.configs.size)
+
+    val streamingModel = FakeStreamingModel(flowOf(response("Hello", FinishReason.CONTINUATION)))
+    val chunks = streamWithAutomaticContinuation(CONFIG) { streamingModel.send(it) }.toList()
+
+    assertEquals(listOf<FinishReason?>(FinishReason.CONTINUATION), chunks.map { it.finishReason })
+    assertEquals(1, streamingModel.configs.size)
   }
 
   @Test
@@ -182,6 +189,7 @@ class AutomaticContinuationTest {
     val chunks = streamWithAutomaticContinuation(CONFIG) { model.send(it) }.toList()
 
     assertEquals(listOf<String?>("a", "b", "c", "d"), chunks.map { it.text })
+    assertEquals(listOf(null, null, null, FinishReason.STOP), chunks.map { it.finishReason })
     assertEquals(2, model.configs.size)
     assertContentEquals(TOKEN_2, model.configs[1]?.continuationToken)
     assertEquals(CONFIG, model.configs[1]?.copy(continuationToken = null))
@@ -198,6 +206,7 @@ class AutomaticContinuationTest {
     val chunks = streamWithAutomaticContinuation(CONFIG) { model.send(it) }.toList()
 
     assertEquals(listOf<String?>("a", "b", "c"), chunks.map { it.text })
+    assertEquals(listOf(null, null, FinishReason.STOP), chunks.map { it.finishReason })
     assertEquals(2, model.configs.size)
     assertContentEquals(TOKEN_1, model.configs[1]?.continuationToken)
   }
@@ -271,8 +280,9 @@ class AutomaticContinuationTest {
   fun testStreamDoesNotContinueOnMaxTokens() = runTest {
     val model = FakeStreamingModel(flowOf(response("a", FinishReason.MAX_TOKENS, TOKEN_1)))
 
-    streamWithAutomaticContinuation(CONFIG) { model.send(it) }.toList()
+    val chunks = streamWithAutomaticContinuation(CONFIG) { model.send(it) }.toList()
 
+    assertEquals(listOf<FinishReason?>(FinishReason.MAX_TOKENS), chunks.map { it.finishReason })
     assertEquals(1, model.configs.size)
   }
 
