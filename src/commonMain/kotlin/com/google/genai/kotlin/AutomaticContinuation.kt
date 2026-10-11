@@ -19,6 +19,7 @@ package com.google.genai.kotlin
 import com.google.genai.kotlin.types.FinishReason
 import com.google.genai.kotlin.types.GenerateContentConfig
 import com.google.genai.kotlin.types.GenerateContentResponse
+import com.google.genai.kotlin.types.GenerateContentResponseUsageMetadata
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
@@ -61,7 +62,7 @@ internal suspend fun generateWithAutomaticContinuation(
 
 /**
  * The streaming counterpart of [generateWithAutomaticContinuation]. The chunks of every request are
- * emitted unchanged, in the order they arrive.
+ * emitted in the order they arrive, with usage metadata accumulated across requests.
  */
 internal fun streamWithAutomaticContinuation(
   config: GenerateContentConfig?,
@@ -69,9 +70,11 @@ internal fun streamWithAutomaticContinuation(
 ): Flow<GenerateContentResponse> {
   return flow {
     var requestConfig = config
+    var accumulatedUsage: GenerateContentResponseUsageMetadata? = null
     while (true) {
       var finishReason: FinishReason? = null
       var token: ByteArray? = null
+      var hopUsage: GenerateContentResponseUsageMetadata? = null
       try {
         send(requestConfig).collect { chunk ->
           val candidate = chunk.candidates?.firstOrNull()
@@ -84,7 +87,19 @@ internal fun streamWithAutomaticContinuation(
           } else if (candidate?.finishReason != null && !isContinuable(candidate.finishReason)) {
             token = null
           }
-          emit(chunk)
+          val chunkUsage = chunk.usageMetadata
+          if (chunkUsage != null) {
+            val mergedUsage =
+              if (accumulatedUsage != null) {
+                mergeUsageMetadata(accumulatedUsage!!, chunkUsage)
+              } else {
+                chunkUsage
+              }
+            hopUsage = mergedUsage
+            emit(if (mergedUsage !== chunkUsage) chunk.copy(usageMetadata = mergedUsage) else chunk)
+          } else {
+            emit(chunk)
+          }
         }
       } catch (e: Throwable) {
         // If a mid-stream error occurs after an intermediate checkpoint continuationToken was
@@ -92,6 +107,9 @@ internal fun streamWithAutomaticContinuation(
         if (e is CancellationException || token == null || !isContinuable(finishReason)) {
           throw e
         }
+      }
+      if (hopUsage != null) {
+        accumulatedUsage = hopUsage
       }
       val next = token
       if (next == null || !isContinuable(finishReason)) {
@@ -104,9 +122,8 @@ internal fun streamWithAutomaticContinuation(
 
 /**
  * Merges the responses of one continued generation into a single response. Lists such as the parts
- * are concatenated in order, each candidate is merged with the one of the same index, and token
- * counts are summed, while the values describing how a candidate's generation ended, such as the
- * finish reason, come from the last response.
+ * are concatenated in order, each candidate is merged with the one of the same index, token counts
+ * are summed, and end of generation values such as the finish reason come from the last response.
  */
 internal fun mergeContinuationResponses(
   responses: List<GenerateContentResponse>
@@ -127,6 +144,30 @@ internal fun mergeContinuationResponses(
       .reduce { prev, curr -> mergeObjects(prev, curr) }
   return Common.JSON.decodeFromJsonElement(GenerateContentResponse.serializer(), merged)
     .copy(sdkHttpResponse = responses.lastOrNull { it.sdkHttpResponse != null }?.sdkHttpResponse)
+    .also {
+      it.usageMetadata?.firstHopPromptTokenCount = responses.firstNotNullOfOrNull { response ->
+        response.usageMetadata?.initialPromptTokenCount
+      }
+    }
+}
+
+internal fun mergeUsageMetadata(
+  prev: GenerateContentResponseUsageMetadata,
+  curr: GenerateContentResponseUsageMetadata,
+): GenerateContentResponseUsageMetadata {
+  val prevJson =
+    Common.JSON.encodeToJsonElement(GenerateContentResponseUsageMetadata.serializer(), prev)
+      .jsonObject
+  val currJson =
+    Common.JSON.encodeToJsonElement(GenerateContentResponseUsageMetadata.serializer(), curr)
+      .jsonObject
+  return Common.JSON.decodeFromJsonElement(
+      GenerateContentResponseUsageMetadata.serializer(),
+      mergeObjects(prevJson, currJson, sumAllNumbers = true),
+    )
+    .also {
+      it.firstHopPromptTokenCount = prev.initialPromptTokenCount ?: curr.initialPromptTokenCount
+    }
 }
 
 // Per the continuation protocol, when a continuationToken is present the backend only sets
@@ -171,7 +212,7 @@ private fun mergeValues(
     current == null -> previous
     previous == null -> current
     previous is JsonObject && current is JsonObject ->
-      mergeObjects(previous, current, sumAllNumbers = key == "usageMetadata")
+      mergeObjects(previous, current, sumAllNumbers = sumAllNumbers || key == "usageMetadata")
     previous is JsonArray && current is JsonArray -> mergeArrays(key, previous, current)
     previous is JsonPrimitive &&
       current is JsonPrimitive &&
