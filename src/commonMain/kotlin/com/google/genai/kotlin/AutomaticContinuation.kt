@@ -225,6 +225,11 @@ private fun mergeValues(
 ): JsonElement? {
   val previous = prev?.takeUnless { it is JsonNull }
   val current = curr?.takeUnless { it is JsonNull }
+  // Route candidates through mergeCandidates even when curr.candidates is null
+  // so preserved candidates clear terminal continuation state.
+  if (key == "candidates" && previous is JsonArray) {
+    return mergeCandidates(previous, current as? JsonArray ?: JsonArray(emptyList()))
+  }
   return when {
     current == null -> previous
     previous == null -> current
@@ -252,6 +257,13 @@ private fun mergeArrays(key: String, prev: JsonArray, curr: JsonArray): JsonArra
 // Each candidate is merged with the one that has the same index in the next response. A candidate
 // that only one response has is kept.
 private fun mergeCandidates(prev: JsonArray, curr: JsonArray): JsonArray {
+  if (curr.isEmpty()) {
+    return JsonArray(
+      prev.map {
+        mergeObjects(it.jsonObject, JsonObject(emptyMap()), latestOnly = END_OF_GENERATION_FIELDS)
+      }
+    )
+  }
   val merged = LinkedHashMap<Int, JsonObject>()
   prev.forEachIndexed { position, candidate ->
     merged[candidateIndex(candidate.jsonObject, position)] = candidate.jsonObject

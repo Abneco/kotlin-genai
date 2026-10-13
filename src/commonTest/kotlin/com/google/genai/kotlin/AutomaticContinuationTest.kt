@@ -16,6 +16,7 @@
 
 package com.google.genai.kotlin
 
+import com.google.genai.kotlin.types.BlockedReason
 import com.google.genai.kotlin.types.Candidate
 import com.google.genai.kotlin.types.Citation
 import com.google.genai.kotlin.types.CitationMetadata
@@ -23,6 +24,7 @@ import com.google.genai.kotlin.types.Content
 import com.google.genai.kotlin.types.FinishReason
 import com.google.genai.kotlin.types.GenerateContentConfig
 import com.google.genai.kotlin.types.GenerateContentResponse
+import com.google.genai.kotlin.types.GenerateContentResponsePromptFeedback
 import com.google.genai.kotlin.types.GenerateContentResponseUsageMetadata
 import com.google.genai.kotlin.types.HarmCategory
 import com.google.genai.kotlin.types.HarmProbability
@@ -611,6 +613,50 @@ class AutomaticContinuationTest {
       candidates?.map { candidate -> candidate.content?.parts?.joinToString("") { it.text!! } },
     )
     assertEquals(FinishReason.STOP, candidates?.get(1)?.finishReason)
+  }
+
+  @Test
+  fun testMergeClearsFinishReasonAndPreservesPromptFeedbackWhenHopHasNoCandidates() {
+    val first =
+      response("Partial output before block.", FinishReason.CONTINUATION, TOKEN_1)
+        .withFirstCandidate { copy(finishMessage = "Continuing") }
+        .copy(
+          usageMetadata =
+            GenerateContentResponseUsageMetadata(
+              promptTokenCount = 10,
+              candidatesTokenCount = 100,
+              totalTokenCount = 110,
+            )
+        )
+
+    for (emptyCandidates in listOf<List<Candidate>?>(null, emptyList())) {
+      val second =
+        GenerateContentResponse(
+          candidates = emptyCandidates,
+          promptFeedback =
+            GenerateContentResponsePromptFeedback(
+              blockReason = BlockedReason.OTHER,
+              blockReasonMessage = "Blocked on continuation hop",
+            ),
+          usageMetadata =
+            GenerateContentResponseUsageMetadata(
+              promptTokenCount = 110,
+              totalTokenCount = 110,
+            ),
+        )
+
+      val merged = mergeContinuationResponses(listOf(first, second))
+
+      assertEquals("Partial output before block.", merged.text)
+      val candidate = merged.candidates?.single()
+      assertNull(candidate?.finishReason)
+      assertNull(candidate?.continuationToken)
+      assertNull(candidate?.finishMessage)
+      assertEquals(BlockedReason.OTHER, merged.promptFeedback?.blockReason)
+      assertEquals("Blocked on continuation hop", merged.promptFeedback?.blockReasonMessage)
+      assertEquals(120, merged.usageMetadata?.promptTokenCount)
+      assertEquals(10, merged.usageMetadata?.initialPromptTokenCount)
+    }
   }
 }
 
