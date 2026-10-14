@@ -61,63 +61,256 @@ internal suspend fun generateWithAutomaticContinuation(
 }
 
 /**
+ * Maximum number of consecutive streaming reconnects that do not receive a new checkpoint
+ * continuationToken before the error is surfaced to the caller.
+ */
+internal const val MAX_STREAM_RECONNECTS_WITHOUT_PROGRESS = 3
+
+/**
  * The streaming counterpart of [generateWithAutomaticContinuation]. The chunks of every request are
- * emitted in the order they arrive, with usage metadata accumulated across requests.
+ * emitted in the order they arrive, with usage metadata accumulated across requests (see
+ * [StreamContinuation]).
  */
 internal fun streamWithAutomaticContinuation(
   config: GenerateContentConfig?,
   send: (GenerateContentConfig?) -> Flow<GenerateContentResponse>,
 ): Flow<GenerateContentResponse> {
   return flow {
-    var requestConfig = config
-    var accumulatedUsage: GenerateContentResponseUsageMetadata? = null
+    val state = StreamContinuation(config)
     while (true) {
-      var finishReason: FinishReason? = null
-      var token: ByteArray? = null
-      var hopUsage: GenerateContentResponseUsageMetadata? = null
+      val requestConfig = state.startHop()
+      var error: Throwable? = null
       try {
-        send(requestConfig).collect { chunk ->
-          val candidate = chunk.candidates?.firstOrNull()
-          candidate?.finishReason?.let { finishReason = it }
-          // A long stream also puts checkpoint tokens on chunks before the last one, so the token
-          // to resume from is the last one seen unless the hop ends with a non-resumable reason.
-          val chunkToken = candidate?.continuationToken?.takeIf { it.isNotEmpty() }
-          if (chunkToken != null) {
-            token = chunkToken
-          } else if (candidate?.finishReason != null && !isContinuable(candidate.finishReason)) {
-            token = null
-          }
-          var outChunk = clearIntermediateFinishReason(chunk, token)
-          val chunkUsage = outChunk.usageMetadata
-          if (chunkUsage != null) {
-            val mergedUsage =
-              if (accumulatedUsage != null) {
-                mergeUsageMetadata(accumulatedUsage!!, chunkUsage)
-              } else {
-                chunkUsage
-              }
-            hopUsage = mergedUsage
-            if (mergedUsage !== chunkUsage) {
-              outChunk = outChunk.copy(usageMetadata = mergedUsage)
-            }
-          }
-          emit(outChunk)
-        }
+        send(requestConfig).collect { chunk -> emit(state.observe(chunk)) }
       } catch (e: Throwable) {
-        // If a mid-stream error occurs after an intermediate checkpoint continuationToken was
-        // received, resume from that checkpoint.
-        if (e is CancellationException || !canResumeStream(token, finishReason)) {
+        if (e is CancellationException) {
           throw e
         }
+        error = e
       }
-      if (hopUsage != null) {
-        accumulatedUsage = hopUsage
-      }
-      if (!canResumeStream(token, finishReason)) {
+      if (!state.endHop(error)) {
         break
       }
-      requestConfig = withContinuationToken(config, token!!)
     }
+  }
+}
+
+/**
+ * State of one [streamWithAutomaticContinuation] call.
+ *
+ * A stream is made of one or more hops (HTTP requests). Each hop after the first resumes from a
+ * continuationToken. The caller drives the loop:
+ * ```
+ * val state = StreamContinuation(config)
+ * while (true) {
+ *   val requestConfig = state.startHop()
+ *   var error: Throwable? = null
+ *   try {
+ *     send(requestConfig).collect { emit(state.observe(it)) }
+ *   } catch (e: Throwable) {
+ *     if (e is CancellationException) throw e
+ *     error = e
+ *   }
+ *   if (!state.endHop(error)) break
+ * }
+ * ```
+ *
+ * Loop state (the usage metadata accumulated across hops, the token to resume from, the count of
+ * reconnects without progress, and the latest error since the stream last made progress) carries
+ * across hops.
+ * See [endHop] for how errors are handled: a request rejected with a [GenAiApiException] before any
+ * chunk is rethrown at once (retrying it is left to the HTTP client's retryOptions), while
+ * transport drops and clean closes are retried and the latest such error is kept so it can be
+ * rethrown if the stream gives up. Per-hop state lives in a [Hop] that [startHop] replaces
+ * wholesale, so it can't leak from one hop into the next.
+ *
+ * Usage metadata: within a hop, each chunk's usage metadata is the server's running total for that
+ * hop, so the latest one is the hop's usage (chunks are not summed). Across hops, the hops' usage
+ * is summed, since each hop is a separate request. Each emitted chunk that has usage metadata
+ * carries the usage of all previous hops plus its own.
+ */
+internal class StreamContinuation(private val config: GenerateContentConfig?) {
+  /** What one hop observed on the chunks it streamed. */
+  internal class Hop(
+    /** Token the hop was started from (null for the initial request). */
+    val startToken: ByteArray? = null,
+    /** Latest continuationToken received during the hop. */
+    var token: ByteArray? = null,
+    var finishReason: FinishReason? = null,
+    var hasPromptFeedback: Boolean = false,
+    var hasYieldedContent: Boolean = false,
+    /** Whether the hop received any chunk at all. */
+    var receivedAnyChunk: Boolean = false,
+    /**
+     * Usage for the whole stream so far: the usage of all previous hops plus this hop's latest
+     * usage metadata. Within a hop, each chunk's usage metadata is the server's running total for
+     * the hop, so it replaces the previous value (it is not summed); a chunk without usage metadata
+     * leaves it unchanged.
+     */
+    var usage: GenerateContentResponseUsageMetadata? = null,
+  )
+
+  /**
+   * Usage of all finished hops, summed. Each hop is a separate request whose usage the server
+   * reports independently, so hop totals are added (unlike chunks within a hop; see [Hop.usage]).
+   */
+  private var accumulatedUsageAcrossHops: GenerateContentResponseUsageMetadata? = null
+
+  /** Token the next hop resumes from (null for the initial request). */
+  private var resumeToken: ByteArray? = null
+
+  /** Latest error since the stream last made progress (new content or a new checkpoint). */
+  private var lastError: Throwable? = null
+
+  // reconnectsWithoutProgress and hop are only settable from outside so that tests can drive
+  // nextResumeToken directly.
+
+  /** Number of consecutive hops that ended without a new continuationToken. */
+  internal var reconnectsWithoutProgress = 0
+
+  /** State of the current hop. */
+  internal var hop = Hop()
+
+  /**
+   * Starts a new hop and returns the config to request it with. The initial request goes out with
+   * the caller's config as given, null included.
+   */
+  fun startHop(): GenerateContentConfig? {
+    hop = Hop(startToken = resumeToken)
+    return resumeToken?.let { withContinuationToken(config, it) } ?: config
+  }
+
+  /**
+   * Records one streamed chunk and returns the chunk to emit, with its intermediate finishReason
+   * cleared when the stream will auto-continue and its usage metadata (if any) set to this hop's
+   * latest usage plus the usage of all previous hops.
+   */
+  fun observe(chunk: GenerateContentResponse): GenerateContentResponse {
+    val hop = this.hop
+    hop.receivedAnyChunk = true
+    if (chunk.promptFeedback != null) {
+      hop.hasPromptFeedback = true
+    }
+    val candidate = chunk.candidates?.firstOrNull()
+    if (!candidate?.content?.parts.isNullOrEmpty()) {
+      hop.hasYieldedContent = true
+    }
+    candidate?.finishReason?.let { hop.finishReason = it }
+    // A long stream also puts checkpoint tokens on chunks before the last one, so the token to
+    // resume from is the last one seen unless the hop ends with a non-resumable reason.
+    val chunkToken = candidate?.continuationToken?.takeIf { it.isNotEmpty() }
+    if (chunkToken != null && chunk.promptFeedback == null) {
+      hop.token = chunkToken
+    } else if (
+      chunk.promptFeedback != null ||
+        (candidate?.finishReason != null && !isContinuable(candidate.finishReason))
+    ) {
+      hop.token = null
+    }
+    var outChunk = clearIntermediateFinishReason(chunk, hop.token)
+    val chunkUsage = outChunk.usageMetadata
+    if (chunkUsage != null) {
+      val mergedUsage =
+        accumulatedUsageAcrossHops?.let { mergeUsageMetadata(it, chunkUsage) } ?: chunkUsage
+      hop.usage = mergedUsage
+      if (mergedUsage !== chunkUsage) {
+        outChunk = outChunk.copy(usageMetadata = mergedUsage)
+      }
+    }
+    return outChunk
+  }
+
+  /**
+   * Ends the current hop and returns true if another hop should be started.
+   *
+   * [error] is the exception thrown while streaming the hop, if any. A [GenAiApiException] (an
+   * HTTP error status, or an error event in the stream) thrown before the hop received any chunk
+   * means the request was rejected; it is rethrown at once without a continuation retry, since
+   * retrying a rejected request is left to the HTTP client's retryOptions, which back off and can
+   * be turned off. Transport failures (dropped connections, network errors) and clean closes are
+   * still retried as below.
+   *
+   * If the stream fails or ends without a terminal finishReason, the next hop resumes from the
+   * latest checkpoint token. If the hop failed before emitting any content or a checkpoint of its
+   * own, it is retried from the token it started with, at most
+   * [MAX_STREAM_RECONNECTS_WITHOUT_PROGRESS] times in a row. When the stream gives up, [error] is
+   * rethrown if there is one; otherwise, if the hop also had no finishReason or promptFeedback, the
+   * latest error since the stream last made progress is rethrown, so a dropped connection followed
+   * by clean empty closes is not lost. If no error was seen, the stream ends normally, even if the
+   * last hop had no finishReason.
+   */
+  fun endHop(error: Throwable?): Boolean {
+    val hop = this.hop
+    hop.usage?.let { accumulatedUsageAcrossHops = it }
+    if (error is GenAiApiException && !hop.receivedAnyChunk) {
+      // The request was rejected (an HTTP error status, or an error event before any chunk).
+      // Retrying that is left to the HTTP client's retryOptions, which back off and which the
+      // caller can turn off.
+      throw error
+    }
+    val hopToken = hop.token
+    val madeProgress =
+      hop.hasYieldedContent ||
+        (hopToken != null && hopToken.isNotEmpty() && !hopToken.contentEquals(hop.startToken))
+    if (error != null) {
+      lastError = error
+    } else if (madeProgress) {
+      lastError = null
+    }
+    val (nextToken, nextReconnects) = nextResumeToken()
+    reconnectsWithoutProgress = nextReconnects
+    resumeToken = nextToken
+    // nextResumeToken already applies these checks, so this currently always holds for a non-null
+    // token.
+    if (
+      nextToken != null && !hop.hasPromptFeedback && canResumeStream(nextToken, hop.finishReason)
+    ) {
+      return true
+    }
+    error?.let { throw it }
+    // A hop the API ended with a finishReason or promptFeedback is a real ending, so an earlier
+    // error is not raised over it.
+    val gaveUp = hop.finishReason == null && !hop.hasPromptFeedback
+    if (gaveUp) {
+      lastError?.let { throw it }
+    }
+    return false
+  }
+
+  /**
+   * Returns the token to resume from (or null to stop) and the updated reconnect count.
+   *
+   * Long-decode checkpoints are only emitted part way through each hop, so a connection can drop
+   * during prefill before the hop has produced a checkpoint of its own. In that case, if no
+   * candidate content has been emitted yet, the hop can be retried from the token it started with.
+   */
+  internal fun nextResumeToken(): Pair<ByteArray?, Int> {
+    val hop = this.hop
+    val hopToken = hop.token
+    if (hop.finishReason != null || hop.hasPromptFeedback) {
+      // When the server explicitly ends the hop with a finishReason or promptFeedback, only continue
+      // if it is CONTINUATION without promptFeedback and produced a new token.
+      return if (
+        hop.finishReason == FinishReason.CONTINUATION &&
+          !hop.hasPromptFeedback &&
+          hopToken != null &&
+          hopToken.isNotEmpty() &&
+          !hopToken.contentEquals(hop.startToken)
+      ) {
+        hopToken to 0
+      } else {
+        null to 0
+      }
+    }
+    if (hopToken != null && hopToken.isNotEmpty() && !hopToken.contentEquals(hop.startToken)) {
+      return hopToken to 0
+    }
+    if (
+      hop.hasYieldedContent || reconnectsWithoutProgress >= MAX_STREAM_RECONNECTS_WITHOUT_PROGRESS
+    ) {
+      return null to reconnectsWithoutProgress
+    }
+    return hop.startToken to (reconnectsWithoutProgress + 1)
   }
 }
 

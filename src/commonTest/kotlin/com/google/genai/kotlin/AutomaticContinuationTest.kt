@@ -46,6 +46,7 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
 import kotlin.test.assertSame
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.toList
@@ -70,6 +71,12 @@ private fun response(
           continuationToken = token,
         )
       )
+  )
+
+/** A chunk whose prompt was blocked: no candidates, only promptFeedback. */
+private fun blockedResponse(): GenerateContentResponse =
+  GenerateContentResponse(
+    promptFeedback = GenerateContentResponsePromptFeedback(blockReason = BlockedReason.SAFETY)
   )
 
 /** Hands out [responses] in order and records the config of every request. */
@@ -259,6 +266,329 @@ class AutomaticContinuationTest {
   }
 
   @Test
+  fun testStreamRetriesFromHopStartTokenWhenResumedHopDropsBeforeFirstCheckpoint() = runTest {
+    val model =
+      FakeStreamingModel(
+        // Hop 1: finishes normally with CONTINUATION and TOKEN_1
+        flowOf(response("a", FinishReason.CONTINUATION, TOKEN_1)),
+        // Hop 2 (attempt 1): drops with an exception before emitting any content or checkpoint
+        flow { throw IllegalStateException("hop 2 dropped early") },
+        // Hop 2 (attempt 2): cuts off without finishReason before emitting any content or
+        // checkpoint
+        emptyFlow(),
+        // Hop 2 (attempt 3): emits a new checkpoint TOKEN_2, then drops
+        flow {
+          emit(response("b3", token = TOKEN_2))
+          throw IllegalStateException("hop 2 dropped after checkpoint")
+        },
+        // Hop 3: completes with STOP
+        flowOf(response("c", FinishReason.STOP)),
+      )
+
+    val chunks = streamWithAutomaticContinuation(CONFIG) { model.send(it) }.toList()
+
+    assertEquals(listOf<String?>("a", "b3", "c"), chunks.map { it.text })
+    assertEquals(5, model.configs.size)
+    assertEquals(CONFIG, model.configs[0])
+    assertContentEquals(TOKEN_1, model.configs[1]?.continuationToken)
+    assertContentEquals(TOKEN_1, model.configs[2]?.continuationToken)
+    assertContentEquals(TOKEN_1, model.configs[3]?.continuationToken)
+    assertContentEquals(TOKEN_2, model.configs[4]?.continuationToken)
+  }
+
+  @Test
+  fun testStreamDoesNotRetryFromHopStartTokenAfterYieldingContent() = runTest {
+    val errorModel =
+      FakeStreamingModel(
+        // Hop 1: finishes normally with CONTINUATION and TOKEN_1
+        flowOf(response("a", FinishReason.CONTINUATION, TOKEN_1)),
+        // Hop 2: emits content parts without a new checkpoint token, then fails
+        flow {
+          emit(response("b"))
+          throw IllegalStateException("hop 2 dropped after content")
+        },
+      )
+
+    val emittedBeforeError = mutableListOf<GenerateContentResponse>()
+    val error =
+      assertFailsWith<IllegalStateException> {
+        streamWithAutomaticContinuation(CONFIG) { errorModel.send(it) }
+          .collect { emittedBeforeError += it }
+      }
+    assertEquals("hop 2 dropped after content", error.message)
+    assertEquals(listOf<String?>("a", "b"), emittedBeforeError.map { it.text })
+    assertEquals(2, errorModel.configs.size)
+    assertEquals(CONFIG, errorModel.configs[0])
+    assertContentEquals(TOKEN_1, errorModel.configs[1]?.continuationToken)
+
+    val cutoffModel =
+      FakeStreamingModel(
+        // Hop 1: finishes normally with CONTINUATION and TOKEN_1
+        flowOf(response("a", FinishReason.CONTINUATION, TOKEN_1)),
+        // Hop 2: emits content parts without a new checkpoint token or finishReason, then closes
+        flowOf(response("b")),
+      )
+
+    // The server reported no error, so the stream ends normally with the chunks already emitted.
+    val emittedBeforeCutoff =
+      streamWithAutomaticContinuation(CONFIG) { cutoffModel.send(it) }.toList()
+    assertEquals(listOf<String?>("a", "b"), emittedBeforeCutoff.map { it.text })
+    assertEquals(2, cutoffModel.configs.size)
+    assertEquals(CONFIG, cutoffModel.configs[0])
+    assertContentEquals(TOKEN_1, cutoffModel.configs[1]?.continuationToken)
+  }
+
+  @Test
+  fun testStreamRethrowsAfterMaxReconnectsWithoutProgressOnResumedHop() = runTest {
+    val model =
+      FakeStreamingModel(
+        // Hop 1: finishes with CONTINUATION and TOKEN_1
+        flowOf(response("a", FinishReason.CONTINUATION, TOKEN_1)),
+        // Initial Hop 2 attempt + MAX_STREAM_RECONNECTS_WITHOUT_PROGRESS retries all fail
+        // before emitting a new checkpoint token.
+        flow { throw IllegalStateException("attempt 1 failed") },
+        flow { throw IllegalStateException("retry 1 failed") },
+        flow { throw IllegalStateException("retry 2 failed") },
+        flow { throw IllegalStateException("retry 3 failed") },
+      )
+
+    val error =
+      assertFailsWith<IllegalStateException> {
+        streamWithAutomaticContinuation(CONFIG) { model.send(it) }.toList()
+      }
+    assertEquals("retry 3 failed", error.message)
+    assertEquals(MAX_STREAM_RECONNECTS_WITHOUT_PROGRESS + 2, model.configs.size)
+    assertEquals(CONFIG, model.configs[0])
+    for (i in 1..MAX_STREAM_RECONNECTS_WITHOUT_PROGRESS + 1) {
+      assertContentEquals(TOKEN_1, model.configs[i]?.continuationToken)
+    }
+  }
+
+  @Test
+  fun testStreamDoesNotRetryAResumedHopRejectedBeforeAnyChunk() = runTest {
+    val model =
+      FakeStreamingModel(
+        // Hop 1: finishes with CONTINUATION and TOKEN_1
+        flowOf(response("a", FinishReason.CONTINUATION, TOKEN_1)),
+        // Hop 2: the request is rejected with an HTTP 503 before any chunk. Retrying that is
+        // left to the HTTP client's retryOptions.
+        flow { throw ServerException(503, "UNAVAILABLE", "overloaded") },
+        // Only reached if the loop wrongly retries the rejected request.
+        flowOf(response("unexpected", FinishReason.STOP)),
+      )
+    val chunks = mutableListOf<GenerateContentResponse>()
+
+    val error =
+      assertFailsWith<ServerException> {
+        streamWithAutomaticContinuation(CONFIG) { model.send(it) }.toList(chunks)
+      }
+    assertEquals(503, error.code)
+    assertEquals(listOf<String?>("a"), chunks.map { it.text })
+    assertEquals(2, model.configs.size)
+    assertContentEquals(TOKEN_1, model.configs[1]?.continuationToken)
+  }
+
+  @Test
+  fun testStreamRethrowsADropFollowedByCleanEmptyClosesAfterMaxReconnects() = runTest {
+    val model =
+      FakeStreamingModel(
+        // Hop 1: finishes with CONTINUATION and TOKEN_1
+        flowOf(response("a", FinishReason.CONTINUATION, TOKEN_1)),
+        // Hop 2 (attempt 1): the connection drops before any chunk.
+        flow { throw IllegalStateException("hop 2 dropped") },
+        // Every retry closes cleanly without a chunk until the retries run out.
+        *Array(MAX_STREAM_RECONNECTS_WITHOUT_PROGRESS) { emptyFlow() },
+      )
+
+    val error =
+      assertFailsWith<IllegalStateException> {
+        streamWithAutomaticContinuation(CONFIG) { model.send(it) }.toList()
+      }
+    // The drop is not lost just because the later attempts closed cleanly.
+    assertEquals("hop 2 dropped", error.message)
+    assertEquals(MAX_STREAM_RECONNECTS_WITHOUT_PROGRESS + 2, model.configs.size)
+    for (i in 1..MAX_STREAM_RECONNECTS_WITHOUT_PROGRESS + 1) {
+      assertContentEquals(TOKEN_1, model.configs[i]?.continuationToken)
+    }
+  }
+
+  @Test
+  fun testStreamStopsWhenResumedHopEndsWithContinuationButNoNewToken() = runTest {
+    val model =
+      FakeStreamingModel(
+        flowOf(response("a", FinishReason.CONTINUATION, TOKEN_1)),
+        flowOf(response("b", FinishReason.CONTINUATION)),
+      )
+
+    val chunks = streamWithAutomaticContinuation(CONFIG) { model.send(it) }.toList()
+
+    assertEquals(listOf<String?>("a", "b"), chunks.map { it.text })
+    assertEquals(listOf(null, FinishReason.CONTINUATION), chunks.map { it.finishReason })
+    assertEquals(2, model.configs.size)
+    assertContentEquals(TOKEN_1, model.configs[1]?.continuationToken)
+  }
+
+  /** Runs [StreamContinuation.nextResumeToken] on a hop in the given state. */
+  private fun nextStreamContinuationToken(
+    hopStartToken: ByteArray?,
+    hopToken: ByteArray?,
+    finishReason: FinishReason?,
+    reconnectsWithoutProgress: Int,
+    hasPromptFeedback: Boolean = false,
+    hopHasYieldedContent: Boolean = false,
+  ): Pair<ByteArray?, Int> {
+    val state = StreamContinuation(CONFIG)
+    state.hop =
+      StreamContinuation.Hop(
+        startToken = hopStartToken,
+        token = hopToken,
+        finishReason = finishReason,
+        hasPromptFeedback = hasPromptFeedback,
+        hasYieldedContent = hopHasYieldedContent,
+      )
+    state.reconnectsWithoutProgress = reconnectsWithoutProgress
+    return state.nextResumeToken()
+  }
+
+  @Test
+  fun testNextStreamContinuationToken() {
+    // New checkpoint token received during hop -> resumes from it and resets counter.
+    val (token1, count1) =
+      nextStreamContinuationToken(
+        hopStartToken = TOKEN_1,
+        hopToken = TOKEN_2,
+        finishReason = null,
+        reconnectsWithoutProgress = 2,
+      )
+    assertContentEquals(TOKEN_2, token1)
+    assertEquals(0, count1)
+
+    // Hop ended without finishReason and without a new token -> retries from hopStartToken.
+    val (token2, count2) =
+      nextStreamContinuationToken(
+        hopStartToken = TOKEN_1,
+        hopToken = null,
+        finishReason = null,
+        reconnectsWithoutProgress = 0,
+      )
+    assertContentEquals(TOKEN_1, token2)
+    assertEquals(1, count2)
+
+    // Server echoed the same hopStartToken without advancing -> counts as no progress.
+    val (token3, count3) =
+      nextStreamContinuationToken(
+        hopStartToken = TOKEN_1,
+        hopToken = TOKEN_1.copyOf(),
+        finishReason = null,
+        reconnectsWithoutProgress = 1,
+      )
+    assertContentEquals(TOKEN_1, token3)
+    assertEquals(2, count3)
+
+    // Retry budget exhausted -> returns null token.
+    val (token4, count4) =
+      nextStreamContinuationToken(
+        hopStartToken = TOKEN_1,
+        hopToken = null,
+        finishReason = null,
+        reconnectsWithoutProgress = MAX_STREAM_RECONNECTS_WITHOUT_PROGRESS,
+      )
+    assertNull(token4)
+    assertEquals(MAX_STREAM_RECONNECTS_WITHOUT_PROGRESS, count4)
+
+    // Hop ended with a finishReason and no new token -> stops instead of replaying hopStartToken.
+    val (token5, count5) =
+      nextStreamContinuationToken(
+        hopStartToken = TOKEN_1,
+        hopToken = null,
+        finishReason = FinishReason.CONTINUATION,
+        reconnectsWithoutProgress = 0,
+      )
+    assertNull(token5)
+    assertEquals(0, count5)
+
+    // Initial hop (hopStartToken == null) fails before any checkpoint -> returns null token.
+    val (token6, count6) =
+      nextStreamContinuationToken(
+        hopStartToken = null,
+        hopToken = null,
+        finishReason = null,
+        reconnectsWithoutProgress = 0,
+      )
+    assertNull(token6)
+    assertEquals(1, count6)
+
+    // Hop ended with promptFeedback -> stops instead of replaying hopStartToken.
+    val (token7, count7) =
+      nextStreamContinuationToken(
+        hopStartToken = TOKEN_1,
+        hopToken = null,
+        finishReason = null,
+        reconnectsWithoutProgress = 1,
+        hasPromptFeedback = true,
+      )
+    assertNull(token7)
+    assertEquals(0, count7)
+
+    // Hop yielded content parts before dropping without a new token -> does not replay
+    // hopStartToken.
+    val (token8, count8) =
+      nextStreamContinuationToken(
+        hopStartToken = TOKEN_1,
+        hopToken = null,
+        finishReason = null,
+        reconnectsWithoutProgress = 1,
+        hopHasYieldedContent = true,
+      )
+    assertNull(token8)
+    assertEquals(1, count8)
+  }
+
+  @Test
+  fun testStreamDoesNotRetryHopStartTokenWhenHopReturnsPromptFeedback() = runTest {
+    val promptFeedback = GenerateContentResponsePromptFeedback(blockReason = BlockedReason.SAFETY)
+    val model =
+      FakeStreamingModel(
+        flowOf(response("a", FinishReason.CONTINUATION, TOKEN_1)),
+        flowOf(GenerateContentResponse(candidates = null, promptFeedback = promptFeedback)),
+      )
+
+    val chunks = streamWithAutomaticContinuation(CONFIG) { model.send(it) }.toList()
+
+    assertEquals(2, model.configs.size)
+    assertEquals(CONFIG, model.configs[0])
+    assertContentEquals(TOKEN_1, model.configs[1]?.continuationToken)
+    assertEquals(2, chunks.size)
+    assertEquals("a", chunks[0].text)
+    assertNull(chunks[0].finishReason)
+    assertEquals(BlockedReason.SAFETY, chunks[1].promptFeedback?.blockReason)
+  }
+
+  @Test
+  fun testStreamEndsNormallyWhenResumedHopEndsWithoutFinishReasonAfterMaxReconnects() = runTest {
+    val model =
+      FakeStreamingModel(
+        // Hop 1: finishes with CONTINUATION and TOKEN_1
+        flowOf(response("a", FinishReason.CONTINUATION, TOKEN_1)),
+        // Initial Hop 2 attempt + MAX_STREAM_RECONNECTS_WITHOUT_PROGRESS retries all close
+        // cleanly with 0 chunks (no finishReason, no promptFeedback, no continuationToken).
+        emptyFlow(),
+        emptyFlow(),
+        emptyFlow(),
+        emptyFlow(),
+      )
+
+    // The server reported no error, so the stream ends normally with the chunks already emitted.
+    val chunks = streamWithAutomaticContinuation(CONFIG) { model.send(it) }.toList()
+    assertEquals(listOf<String?>("a"), chunks.map { it.text })
+    assertEquals(MAX_STREAM_RECONNECTS_WITHOUT_PROGRESS + 2, model.configs.size)
+    assertEquals(CONFIG, model.configs[0])
+    for (i in 1..MAX_STREAM_RECONNECTS_WITHOUT_PROGRESS + 1) {
+      assertContentEquals(TOKEN_1, model.configs[i]?.continuationToken)
+    }
+  }
+
+  @Test
   fun testStreamStopsAtACheckpointWhenTheModelFinishes() = runTest {
     val model =
       FakeStreamingModel(flowOf(response("a", token = TOKEN_1), response("b", FinishReason.STOP)))
@@ -291,6 +621,45 @@ class AutomaticContinuationTest {
     val chunks = streamWithAutomaticContinuation(CONFIG) { model.send(it) }.toList()
 
     assertEquals(listOf<FinishReason?>(FinishReason.MAX_TOKENS), chunks.map { it.finishReason })
+    assertEquals(1, model.configs.size)
+  }
+
+  @Test
+  fun testStreamDoesNotResumeFromACheckpointAfterABlockedChunk() = runTest {
+    val blocked = blockedResponse()
+    val model =
+      FakeStreamingModel(
+        flowOf(response("a"), response("b", token = TOKEN_1), blocked),
+        // Only reached if the loop wrongly resumes from the checkpoint.
+        flowOf(response("unexpected", FinishReason.STOP)),
+      )
+
+    val chunks = streamWithAutomaticContinuation(CONFIG) { model.send(it) }.toList()
+
+    assertEquals(listOf<String?>("a", "b", null), chunks.map { it.text })
+    assertSame(blocked, chunks.last())
+    assertEquals(1, model.configs.size)
+  }
+
+  @Test
+  fun testStreamRethrowsErrorAfterABlockedChunkInsteadOfResuming() = runTest {
+    val model =
+      FakeStreamingModel(
+        flow {
+          emit(response("a", token = TOKEN_1))
+          emit(blockedResponse())
+          throw IllegalStateException("stream dropped")
+        },
+        // Only reached if the loop wrongly resumes from the checkpoint.
+        flowOf(response("unexpected", FinishReason.STOP)),
+      )
+    val chunks = mutableListOf<GenerateContentResponse>()
+
+    assertFailsWith<IllegalStateException> {
+      streamWithAutomaticContinuation(CONFIG) { model.send(it) }.toList(chunks)
+    }
+    assertEquals(2, chunks.size)
+    assertEquals(BlockedReason.SAFETY, chunks.last().promptFeedback?.blockReason)
     assertEquals(1, model.configs.size)
   }
 
