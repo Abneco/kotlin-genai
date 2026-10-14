@@ -21,7 +21,7 @@ import com.google.genai.kotlin.GenAiApiException
 import com.google.genai.kotlin.types.HttpRetryOptions
 
 /** Flash is cheaper and faster than the corpus GEMINI_MODEL for API-mode runs. */
-const val SHARED_MODEL = "gemini-3.6-flash"
+const val SHARED_MODEL = "gemini-3.8-flash"
 
 /**
  * Base class for the curated "shared" integration tests, the cross-SDK critical pathways the
