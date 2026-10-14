@@ -35,9 +35,9 @@ open class SharedTestBase : BaseTestServer() {
    */
   override val testRetryOptions =
     HttpRetryOptions(
-      attempts = 3,
-      initialDelay = 1.0,
-      maxDelay = 10.0,
+      attempts = 5,
+      initialDelay = 2.0,
+      maxDelay = 16.0,
       expBase = 2.0,
       httpStatusCodes = listOf(408, 429, 500, 502, 503, 504),
     )
