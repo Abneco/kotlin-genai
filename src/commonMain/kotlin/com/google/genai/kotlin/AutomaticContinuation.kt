@@ -275,10 +275,62 @@ private fun mergeCandidates(prev: JsonArray, curr: JsonArray): JsonArray {
       if (previous == null) {
         candidate.jsonObject
       } else {
-        mergeObjects(previous, candidate.jsonObject, latestOnly = END_OF_GENERATION_FIELDS)
+        mergeObjects(
+          previous,
+          shiftGroundingSupports(previous, candidate.jsonObject),
+          latestOnly = END_OF_GENERATION_FIELDS,
+        )
       }
   }
   return JsonArray(merged.values.toList())
+}
+
+private fun shiftGroundingSupports(previous: JsonObject, current: JsonObject): JsonObject {
+  val currGm = current["groundingMetadata"] as? JsonObject ?: return current
+  val currSupports = currGm["groundingSupports"] as? JsonArray ?: return current
+  if (currSupports.isEmpty()) return current
+
+  val partOffset = ((previous["content"] as? JsonObject)?.get("parts") as? JsonArray)?.size ?: 0
+  val chunkOffset =
+    ((previous["groundingMetadata"] as? JsonObject)?.get("groundingChunks") as? JsonArray)?.size
+      ?: 0
+  if (partOffset == 0 && chunkOffset == 0) return current
+
+  val shiftedSupports =
+    JsonArray(
+      currSupports.map { supportElem ->
+        val supportObj = supportElem as? JsonObject ?: return@map supportElem
+        val updatedSupport = supportObj.toMutableMap()
+        if (chunkOffset > 0) {
+          val indices = supportObj["groundingChunkIndices"] as? JsonArray
+          if (indices != null && indices.isNotEmpty()) {
+            updatedSupport["groundingChunkIndices"] =
+              JsonArray(
+                indices.map { idxElem ->
+                  val idx = idxElem.jsonPrimitive.intOrNull
+                  if (idx != null) JsonPrimitive(idx + chunkOffset) else idxElem
+                }
+              )
+          }
+        }
+        if (partOffset > 0) {
+          val segmentObj = supportObj["segment"] as? JsonObject
+          if (segmentObj != null) {
+            val prevPartIdx = segmentObj["partIndex"]?.jsonPrimitive?.intOrNull ?: 0
+            val updatedSegment = segmentObj.toMutableMap()
+            updatedSegment["partIndex"] = JsonPrimitive(prevPartIdx + partOffset)
+            updatedSupport["segment"] = JsonObject(updatedSegment)
+          }
+        }
+        JsonObject(updatedSupport)
+      }
+    )
+
+  val updatedGm = currGm.toMutableMap()
+  updatedGm["groundingSupports"] = shiftedSupports
+  val updatedCandidate = current.toMutableMap()
+  updatedCandidate["groundingMetadata"] = JsonObject(updatedGm)
+  return JsonObject(updatedCandidate)
 }
 
 // A candidate without an index is matched by its position.
