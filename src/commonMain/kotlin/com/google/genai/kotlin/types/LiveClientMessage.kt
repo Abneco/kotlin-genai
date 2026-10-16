@@ -38,4 +38,7 @@ data class LiveClientMessage(
 
   /** Response to a `ToolCallMessage` received from the server. */
   val toolResponse: LiveClientToolResponse? = null,
+
+  /** Updates to the context of the current session. */
+  val contextUpdate: LiveClientContextUpdate? = null,
 )

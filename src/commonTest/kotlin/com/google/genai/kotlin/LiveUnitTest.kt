@@ -16,8 +16,15 @@
 
 package com.google.genai.kotlin
 
+import com.google.genai.kotlin.types.Content
+import com.google.genai.kotlin.types.FunctionDeclaration
+import com.google.genai.kotlin.types.LiveClientContextUpdate
+import com.google.genai.kotlin.types.LiveClientContextUpdateTools
+import com.google.genai.kotlin.types.Part
+import com.google.genai.kotlin.types.Tool
 import io.ktor.client.plugins.websocket.DefaultClientWebSocketSession
 import io.ktor.websocket.Frame
+import io.ktor.websocket.readText
 import io.mockk.coEvery
 import io.mockk.every
 import io.mockk.mockk
@@ -29,6 +36,10 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.test.runTest
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 
 private const val TEST_MODEL = "gemini-3.1-flash-live-preview"
 
@@ -66,5 +77,178 @@ class LiveUnitTest {
     live().connect(TEST_MODEL)
 
     assertFalse(job.isCancelled)
+  }
+
+  @Test
+  fun testSendContextUpdate_systemInstruction() = runTest {
+    listOf(false, true).forEach { enterprise ->
+      val sentFrames = mutableListOf<Frame>()
+      coEvery { socket.send(capture(sentFrames)) } returns Unit
+      val apiClient =
+        ApiClient(
+          apiKey = "test-api-key",
+          enterprise = enterprise,
+          project = if (enterprise) "test-project" else null,
+          location = if (enterprise) "us-central1" else null,
+        )
+      val session = LiveSession(socket, apiClient)
+
+      session.sendContextUpdate(
+        LiveClientContextUpdate(
+          systemInstruction = Content(parts = listOf(Part(text = "You are a helpful assistant.")))
+        )
+      )
+
+      assertEquals(1, sentFrames.size)
+      val json = Json.parseToJsonElement((sentFrames.single() as Frame.Text).readText()).jsonObject
+      assertEquals(
+        "You are a helpful assistant.",
+        json["contextUpdate"]!!
+          .jsonObject["systemInstruction"]!!
+          .jsonObject["parts"]!!
+          .jsonArray[0]
+          .jsonObject["text"]!!
+          .jsonPrimitive
+          .content,
+      )
+    }
+  }
+
+  @Test
+  fun testSendContextUpdate_clearTools() = runTest {
+    listOf(false, true).forEach { enterprise ->
+      val sentFrames = mutableListOf<Frame>()
+      coEvery { socket.send(capture(sentFrames)) } returns Unit
+      val apiClient =
+        ApiClient(
+          apiKey = "test-api-key",
+          enterprise = enterprise,
+          project = if (enterprise) "test-project" else null,
+          location = if (enterprise) "us-central1" else null,
+        )
+      val session = LiveSession(socket, apiClient)
+
+      session.sendContextUpdate(
+        LiveClientContextUpdate(tools = LiveClientContextUpdateTools(tools = emptyList()))
+      )
+
+      assertEquals(1, sentFrames.size)
+      val json = Json.parseToJsonElement((sentFrames.single() as Frame.Text).readText()).jsonObject
+      assertEquals(
+        0,
+        json["contextUpdate"]!!.jsonObject["tools"]!!.jsonObject["tools"]!!.jsonArray.size,
+      )
+    }
+  }
+
+  @Test
+  fun testSendContextUpdate_withFunctionDeclaration() = runTest {
+    listOf(false, true).forEach { enterprise ->
+      val sentFrames = mutableListOf<Frame>()
+      coEvery { socket.send(capture(sentFrames)) } returns Unit
+      val apiClient =
+        ApiClient(
+          apiKey = "test-api-key",
+          enterprise = enterprise,
+          project = if (enterprise) "test-project" else null,
+          location = if (enterprise) "us-central1" else null,
+        )
+      val session = LiveSession(socket, apiClient)
+
+      session.sendContextUpdate(
+        LiveClientContextUpdate(
+          tools =
+            LiveClientContextUpdateTools(
+              tools =
+                listOf(
+                  Tool(
+                    functionDeclarations =
+                      listOf(
+                        FunctionDeclaration(
+                          name = "get_current_weather",
+                          description = "Gets the weather for a location.",
+                        )
+                      )
+                  )
+                )
+            )
+        )
+      )
+
+      assertEquals(1, sentFrames.size)
+      val json = Json.parseToJsonElement((sentFrames.single() as Frame.Text).readText()).jsonObject
+      val toolsArray = json["contextUpdate"]!!.jsonObject["tools"]!!.jsonObject["tools"]!!.jsonArray
+      assertEquals(1, toolsArray.size)
+      assertEquals(
+        "get_current_weather",
+        toolsArray[0]
+          .jsonObject["functionDeclarations"]!!
+          .jsonArray[0]
+          .jsonObject["name"]!!
+          .jsonPrimitive
+          .content,
+      )
+    }
+  }
+
+  @Test
+  fun testSendContextUpdate_bothSystemInstructionAndTools() = runTest {
+    listOf(false, true).forEach { enterprise ->
+      val sentFrames = mutableListOf<Frame>()
+      coEvery { socket.send(capture(sentFrames)) } returns Unit
+      val apiClient =
+        ApiClient(
+          apiKey = "test-api-key",
+          enterprise = enterprise,
+          project = if (enterprise) "test-project" else null,
+          location = if (enterprise) "us-central1" else null,
+        )
+      val session = LiveSession(socket, apiClient)
+
+      session.sendContextUpdate(
+        LiveClientContextUpdate(
+          systemInstruction = Content(parts = listOf(Part(text = "Updated instruction."))),
+          tools =
+            LiveClientContextUpdateTools(
+              tools =
+                listOf(
+                  Tool(
+                    functionDeclarations =
+                      listOf(
+                        FunctionDeclaration(
+                          name = "get_current_weather",
+                          description = "Gets the weather for a location.",
+                        )
+                      )
+                  )
+                )
+            ),
+        )
+      )
+
+      assertEquals(1, sentFrames.size)
+      val json = Json.parseToJsonElement((sentFrames.single() as Frame.Text).readText()).jsonObject
+      assertEquals(
+        "Updated instruction.",
+        json["contextUpdate"]!!
+          .jsonObject["systemInstruction"]!!
+          .jsonObject["parts"]!!
+          .jsonArray[0]
+          .jsonObject["text"]!!
+          .jsonPrimitive
+          .content,
+      )
+      val toolsArray = json["contextUpdate"]!!.jsonObject["tools"]!!.jsonObject["tools"]!!.jsonArray
+      assertEquals(1, toolsArray.size)
+      assertEquals(
+        "get_current_weather",
+        toolsArray[0]
+          .jsonObject["functionDeclarations"]!!
+          .jsonArray[0]
+          .jsonObject["name"]!!
+          .jsonPrimitive
+          .content,
+      )
+    }
   }
 }
