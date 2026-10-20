@@ -21,7 +21,7 @@ package com.google.genai.kotlin.types
 import kotlin.jvm.JvmInline
 import kotlinx.serialization.Serializable
 
-/** The environment being operated. */
+/** The target environment where the computer use tool operates. */
 @Serializable
 @JvmInline
 value class Environment(val value: String) {
@@ -29,16 +29,16 @@ value class Environment(val value: String) {
 
   companion object {
 
-    /** Defaults to browser. */
+    /** The environment is unspecified. */
     val ENVIRONMENT_UNSPECIFIED = Environment("ENVIRONMENT_UNSPECIFIED")
 
-    /** Operates in a web browser. */
+    /** The tool operates in a web browser. */
     val ENVIRONMENT_BROWSER = Environment("ENVIRONMENT_BROWSER")
 
-    /** Operates in a mobile environment. */
+    /** The tool operates in a mobile environment. */
     val ENVIRONMENT_MOBILE = Environment("ENVIRONMENT_MOBILE")
 
-    /** Operates in a desktop environment. */
+    /** The tool operates in a desktop environment. */
     val ENVIRONMENT_DESKTOP = Environment("ENVIRONMENT_DESKTOP")
   }
 }
