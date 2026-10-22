@@ -1554,6 +1554,14 @@ class Batches internal constructor(internal val apiClient: ApiClient) {
       )
     }
 
+    Common.getValueByPath(fromObject, arrayOf("store"))?.let { node ->
+      Common.setValueByPath(
+        parentObject,
+        arrayOf("store"),
+        Common.getValueByPath(fromObject, arrayOf("store")),
+      )
+    }
+
     return toObject
   }
 

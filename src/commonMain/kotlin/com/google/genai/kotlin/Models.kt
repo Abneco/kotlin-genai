@@ -1535,6 +1535,14 @@ class Models internal constructor(internal val apiClient: ApiClient) {
       )
     }
 
+    Common.getValueByPath(fromObject, arrayOf("store"))?.let { node ->
+      Common.setValueByPath(
+        parentObject,
+        arrayOf("store"),
+        Common.getValueByPath(fromObject, arrayOf("store")),
+      )
+    }
+
     return toObject
   }
 
@@ -1841,6 +1849,12 @@ class Models internal constructor(internal val apiClient: ApiClient) {
         parentObject,
         arrayOf("outputConfig"),
         Common.getValueByPath(fromObject, arrayOf("generationOutputConfig")),
+      )
+    }
+
+    if (!Common.isZero(Common.getValueByPath(fromObject, arrayOf("store")))) {
+      throw IllegalArgumentException(
+        "store parameter is not supported in Gemini Enterprise Agent Platform."
       )
     }
 

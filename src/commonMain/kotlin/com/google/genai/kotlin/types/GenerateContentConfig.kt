@@ -217,4 +217,10 @@ data class GenerateContentConfig(
 
   /** Optional. Configuration for persisting output assets to external storage. */
   val generationOutputConfig: GenerationOutputConfig? = null,
+
+  /**
+   * Configures the logging behavior for a given request. If set, it takes precedence over the
+   * project-level logging config. This field is not supported in Gemini Enterprise Agent Platform.
+   */
+  val store: Boolean? = null,
 )

@@ -138,4 +138,10 @@ data class LiveConnectConfig(
 
   /** Config for translation. */
   val translationConfig: TranslationConfig? = null,
+
+  /**
+   * Labels with user-defined metadata for the session. In Gemini Enterprise Agent Platform, they
+   * are used for billing and reporting.
+   */
+  val labels: Map<String, String>? = null,
 )

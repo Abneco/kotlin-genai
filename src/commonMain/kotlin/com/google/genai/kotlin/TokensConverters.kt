@@ -493,6 +493,14 @@ internal object TokensConverters {
       )
     }
 
+    Common.getValueByPath(fromObject, arrayOf("labels"))?.let { node ->
+      Common.setValueByPath(
+        parentObject,
+        arrayOf("setup", "labels"),
+        Common.getValueByPath(fromObject, arrayOf("labels")),
+      )
+    }
+
     return toObject
   }
 
